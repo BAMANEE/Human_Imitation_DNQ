@@ -3,15 +3,92 @@ from collections import namedtuple, deque
 import numpy as np
 from numpy.random import choice
 import torch
+import operator
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class ReplayBuffer:
-    """Fixed-size buffer to store experience tuples."""
 
     def __init__(self, action_size, buffer_size, batch_size, experiences_per_sampling, seed, compute_weights):
         """Initialize a ReplayBuffer object.
 
+        Params
+        ======
+            action_size (int): dimension of each action
+            buffer_size (int): maximum size of buffer
+            experiences_per_sampling (int): number of experiences to sample during a sampling iteration
+            batch_size (int): size of each training batch
+            seed (int): random seed
+        """
+        self.action_size = action_size
+        self.buffer_size = buffer_size
+        self.batch_size = batch_size
+        self.experiences_per_sampling = experiences_per_sampling
+    
+        self.seed = random.seed(seed)
+        self.experience_count = 0
+        
+        self.memory = deque(maxlen=buffer_size)
+        self.sampled_batches = []
+        self.current_batch = 0
+        self.priorities_sum_alpha = 0
+        self.priorities_max = 1
+        self.weights_max = 1
+
+    def update_priorities():
+        pass
+
+    def update_memory_sampling(self):
+        """Randomly sample X batches of experiences from memory."""
+        # X is the number of steps before updating memory
+        self.current_batch = 0
+        random_values = random.choices(self.memory, k=self.experiences_per_sampling)
+        self.sampled_batches = [random_values[i:i + self.batch_size] 
+                                    for i in range(0, len(random_values), self.batch_size)]
+
+    def update_parameters(self):
+        pass
+
+    def add(self, state, action, reward, next_state, done):
+        """Add a new experience to memory."""
+        self.memory.append((state, action, reward, next_state, done))
+
+    def sample(self):
+        sampled_batch = self.sampled_batches[self.current_batch]
+        self.current_batch += 1
+
+        experiences = []
+        
+        for data in sampled_batch:
+            experiences.append(self.memory.get(data.index))
+            weights.append(data.weight)
+            indices.append(data.index)
+
+        states = torch.from_numpy(
+            np.vstack([e.state for e in experiences if e is not None])).float().to(device)
+        actions = torch.from_numpy(
+            np.vstack([e.action for e in experiences if e is not None])).long().to(device)
+        rewards = torch.from_numpy(
+            np.vstack([e.reward for e in experiences if e is not None])).float().to(device)
+        next_states = torch.from_numpy(
+            np.vstack([e.next_state for e in experiences if e is not None])).float().to(device)
+        dones = torch.from_numpy(
+            np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
+        weights = [0] * len(experiences)
+        indices = [0] * len(experiences)
+
+        return (states, actions, rewards, next_states, dones, weights, indices)
+
+    def __len__(self):
+        """Return the current size of internal memory."""
+        return len(self.memory)
+
+
+class PriorityReplayBuffer:
+    """Fixed-size buffer to store experience tuples."""
+
+    def __init__(self, action_size, buffer_size, batch_size, experiences_per_sampling, seed, compute_weights):
+        """Initialize a ReplayBuffer object.
         Params
         ======
             action_size (int): dimension of each action
@@ -105,8 +182,6 @@ class ReplayBuffer:
                 weight = ((N *  element.probability)**(-self.beta))/self.weights_max
             d = self.data(element.priority, probability, weight, element.index)
             self.memory_data[element.index] = d
-        print("sum_prob before", sum_prob_before)
-        print("sum_prob after : ", sum_prob_after)
     
     def add(self, state, action, reward, next_state, done):
         """Add a new experience to memory."""
@@ -117,12 +192,12 @@ class ReplayBuffer:
             temp = self.memory_data[index]
             self.priorities_sum_alpha -= temp.priority**self.alpha
             if temp.priority == self.priorities_max:
-                self.memory_data[index].priority = 0
-                self.priorities_max = max(self.memory_data.items(), key=operator.itemgetter(1)).priority
+                self.memory_data[index] = self.memory_data[index]._replace(priority=0)
+                self.priorities_max = max(self.memory_data.values(), key=operator.itemgetter(1)).priority
             if self.compute_weights:
                 if temp.weight == self.weights_max:
-                    self.memory_data[index].weight = 0
-                    self.weights_max = max(self.memory_data.items(), key=operator.itemgetter(2)).weight
+                    self.memory_data[index] = self.memory_data[index]._replace(weight=0)
+                    self.weights_max = max(self.memory_data.values(), key=operator.itemgetter(2)).weight
 
         priority = self.priorities_max
         weight = self.weights_max
