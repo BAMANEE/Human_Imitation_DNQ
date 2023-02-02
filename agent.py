@@ -1,36 +1,37 @@
-import numpy as np
+"""
+DQN Agent with Prioritized Experience Replay.
+"""
 import random
+import math
+from collections import deque
+import numpy as np
+import torch
+from torch import nn
+import torch.nn.functional as F
+from torch import optim
 
 from model import QNetwork, QnetworkImage
-from replay_buffer import PriorityReplayBuffer, ReplayBuffer
+from replay_buffer import PriorityReplayBuffer
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import math
-import operator
-from collections import deque
 
 BUFFER_SIZE = int(1e5)      # replay buffer size
-BATCH_SIZE = 64             # minibatch size
+BATCH_SIZE = 64             # minibatch size (64)
 GAMMA = 0.99                # discount factor
 TAU = 1e-3                  # for soft update of target parameters
 LR = 5e-4                   # learning rate 
-UPDATE_NN_EVERY = 1        # how often to update the network
+UPDATE_NN_EVERY = 1        # how often to update the network (1)
 
 # prioritized experience replay
 UPDATE_MEM_EVERY = 20          # how often to update the priorities
 UPDATE_MEM_PAR_EVERY = 3000     # how often to update the hyperparameters
 EXPERIENCES_PER_SAMPLING = math.ceil(BATCH_SIZE * UPDATE_MEM_EVERY / UPDATE_NN_EVERY)
 
-
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Agent():
     """Interacts with and learns from the environment."""
 
-    def __init__(self, state_size, action_size, seed, compute_weights = False, img=False):
+    def __init__(self, state_size, action_size, seed, buffer_size = BUFFER_SIZE, compute_weights = False, img=False):
         """Initialize an Agent object.
         
         Params
@@ -41,11 +42,14 @@ class Agent():
         """
         self.state_size = state_size
         self.action_size = action_size
-        self.seed = random.seed(seed)
         self.compute_weights = compute_weights
+        self.buffer_size = buffer_size
+        self.img = img
+
+        random.seed(seed)
 
         # Q-Network
-        if img:
+        if self.img:
             self.qnetwork_local = QnetworkImage(state_size, action_size, seed).to(device)
             self.qnetwork_target = QnetworkImage(state_size, action_size, seed).to(device)
         else:
@@ -56,9 +60,7 @@ class Agent():
 
         # Replay memory
         self.memory = PriorityReplayBuffer(
-            action_size, BUFFER_SIZE, BATCH_SIZE, EXPERIENCES_PER_SAMPLING, seed, compute_weights)
-        self.human_memory = PriorityReplayBuffer(
-            action_size, BUFFER_SIZE, BATCH_SIZE, EXPERIENCES_PER_SAMPLING, seed, compute_weights)
+            action_size, self.buffer_size, BATCH_SIZE, EXPERIENCES_PER_SAMPLING, seed, compute_weights)
         # Initialize time step (for updating every UPDATE_NN_EVERY steps)
         self.t_step_nn = 0
         # Initialize time step (for updating every UPDATE_MEM_PAR_EVERY steps)
@@ -69,41 +71,19 @@ class Agent():
         self.human = False
 
         self.delta_window = deque(maxlen=100)
-
-    def pretrain(self, experiences, num_epochs):
-        """Pretrain the Q-network with experiences from the replay buffer."""
-
-        
-
-        states = torch.from_numpy(
-            np.vstack([e[0] for e in experiences if e is not None])).float().to(device)
-        actions = torch.from_numpy(
-            np.vstack([e[1] for e in experiences if e is not None])).long().to(device)
-        rewards = torch.from_numpy(
-            np.vstack([e[2] for e in experiences if e is not None])).float().to(device)
-        next_states = torch.from_numpy(
-            np.vstack([e[3] for e in experiences if e is not None])).float().to(device)
-        dones = torch.from_numpy(
-            np.vstack([e[4] for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
-        weights = [0] * len(experiences)
-        indices = [0] * len(experiences)
-
-        experiences = (states, actions, rewards, next_states, dones, weights, indices)
-
-        for epoch in range(num_epochs):
-            print("Epoch: {:07d}\tDelta: {:.4f}".format(epoch, self.get_delta()), end='\r')
-            self.learn(experiences, GAMMA, pretrain=True)
     
     def step(self, state, action, reward, next_state, done):
-        if self.human:
-            # Initialize time step (for updating every UPDATE_NN_EVERY steps)
-            self.t_step_nn = 0
-            # Initialize time step (for updating every UPDATE_MEM_PAR_EVERY steps)
-            self.t_step_mem_par = 0
-            # Initialize time step (for updating every UPDATE_MEM_EVERY steps)
-            self.t_step_mem = 0
-            # Initialize time step (for adding human memory every ADD_HUMAN_MEM_EVERY steps)
-            self.human = False
+        """
+        Save experience in replay memory, and use random sample from buffer to learn.
+
+        Params
+        ======
+            state (array_like): current state
+            action (int): action taken
+            reward (float): reward received
+            next_state (array_like): next state
+            done (bool): whether the episode is finished       
+        """
         # Save experience in replay memory
         self.memory.add(state, action, reward, next_state, done)
         
@@ -121,26 +101,7 @@ class Agent():
         if self.t_step_mem == 0:
             self.memory.update_memory_sampling()
 
-    def human_step(self, state, action, reward, next_state, done):
-        self.human = True
-        # Save experience in replay memory
-        self.human_memory.add(state, action, reward, next_state, done)
-        
-        # Learn every UPDATE_NN_EVERY time steps.
-        self.t_step_nn = (self.t_step_nn + 1) % UPDATE_NN_EVERY
-        self.t_step_mem = (self.t_step_mem + 1) % UPDATE_MEM_EVERY
-        self.t_step_mem_par = (self.t_step_mem_par + 1) % UPDATE_MEM_PAR_EVERY
-        if self.t_step_mem_par == 0:
-            self.human_memory.update_parameters()
-        if self.t_step_nn == 0:
-            # If enough samples are available in memory, get random subset and learn
-            if self.human_memory.experience_count > EXPERIENCES_PER_SAMPLING:
-                sampling = self.human_memory.sample()
-                self.learn(sampling, GAMMA)
-        if self.t_step_mem == 0:
-            self.human_memory.update_memory_sampling()
-
-    def act(self, state, eps=0., other_model=None, extra_rand=0):
+    def act(self, state, eps=0, other_model=None):
         """Returns actions for given state as per current policy.
         
         Params
@@ -155,13 +116,23 @@ class Agent():
         self.qnetwork_local.train()
 
         # Epsilon-greedy action selection
+
         rnd = random.random()
-        if random.random() > extra_rand:
-            if random.random() > eps:
-                return np.argmax(action_values.cpu().data.numpy())
-            elif other_model is not None:
+        if rnd < eps:
+            if other_model:
                 return np.argmax(other_model(state).cpu().data.numpy())
-        return random.choice(np.arange(self.action_size))
+            else:
+                return random.choice(np.arange(self.action_size))
+        else:
+            return np.argmax(action_values.cpu().data.numpy())
+                
+
+        # if random.random() > extra_rand:
+        #     if random.random() > eps:
+        #         return np.argmax(action_values.cpu().data.numpy())
+        #     elif other_model is not None:
+        #         return np.argmax(other_model(state).cpu().data.numpy())
+        # return random.choice(np.arange(self.action_size))
 
     def learn(self, sampling, gamma, pretrain=False):
         """Update value parameters using given batch of experience tuples.
@@ -172,7 +143,6 @@ class Agent():
             gamma (float): discount factor
         """
         states, actions, rewards, next_states, dones, weights, indices  = sampling
-
         ## TODO: compute and minimize the loss        
         q_target = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
         expected_values = rewards + gamma*q_target*(1-dones)
@@ -210,6 +180,7 @@ class Agent():
             target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
 
     def get_delta(self):
+        """Returns the mean of the delta window"""
         if not self.delta_window:
             return 0
         return np.mean(self.delta_window)

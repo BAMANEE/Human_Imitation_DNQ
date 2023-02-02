@@ -1,14 +1,18 @@
 import gym
 import torch
-from model import ImitationNetwork
+from model import *
 import numpy as np
+from tqdm import trange
     
 def demo(model, env, device):
     scores = []
-    for j in range (1000):
+    for j in trange (100):
             score = 0
             state = env.reset()
             for j in range(200):
+                if image == True:
+                    #expand dimension to fit model
+                    state = np.expand_dims(state, axis=0)
                 action = torch.argmax(model(torch.from_numpy(state).type(torch.float).to(device))).item()
                 state, reward, done, _ = env.step(action)
                 score += reward
@@ -20,10 +24,14 @@ def demo(model, env, device):
 
 if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    env = gym.make('MountainCar-v0')
-    state_size = 2
-    action_size = 3
+    env = gym.make('CarRacing-v2', continuous=False)
+    state_size = (92, 92, 3)
+    action_size = 5
     seed = 0
-    model = ImitationNetwork(state_size, action_size, seed).to(device)
-    model.load_state_dict(torch.load("imitation_models/GoodHuman100ModelLatest.pth"))
+    image = True
+    if image == True:
+        model = ImitationNetworkImage(state_size, action_size, seed).to(device)
+    else:
+        model = ImitationNetwork(state_size, action_size, seed).to(device)
+    model.load_state_dict(torch.load("imitation_models/CarRacing10Best.pth"))
     demo(model, env, device)
