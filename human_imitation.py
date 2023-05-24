@@ -7,13 +7,14 @@ import gym
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from torchsampler import ImbalancedDatasetSampler
-from tqdm import tqdm
+from tqdm import tqdm, trange
 import numpy as np
 import torch
 import torch.nn as nn
 
 from model import ImitationNetwork, ImitationNetworkImage
 from game_params import game_params
+from ensamble import ensamble_run
 
 LR = 1e-4
 
@@ -98,7 +99,7 @@ def accuracy(model, loader, device):
             correct += (predicted == action).sum().item()
     return correct / total
     
-def train_and_validate(data_x, data_y, valid_x, valid_y, epochs, output, image=False):
+def train_and_validate(data_x, data_y, valid_x, valid_y, epochs, output, image=False, imbalancedSampler=True):
     """
     Trains the model on the given data and saves the best model to the given output path.
     """
@@ -110,10 +111,16 @@ def train_and_validate(data_x, data_y, valid_x, valid_y, epochs, output, image=F
         model = ImitationNetwork(state_size, action_size, seed).to(device)
         batch_size = 1024
 
-    train_dataset = ExperienceTrainDataset(data_x, data_y)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=ImbalancedDatasetSampler(train_dataset))
-    valid_dataset = ExperienceTrainDataset(valid_x, valid_y)
-    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, sampler=ImbalancedDatasetSampler(valid_dataset))
+    if imbalancedSampler:
+        train_dataset = ExperienceTrainDataset(data_x, data_y)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=ImbalancedDatasetSampler(train_dataset))
+        valid_dataset = ExperienceTrainDataset(valid_x, valid_y)
+        valid_loader = DataLoader(valid_dataset, batch_size=batch_size)
+    else:
+        train_dataset = ExperienceTrainDataset(data_x, data_y)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        valid_dataset = ExperienceTrainDataset(valid_x, valid_y)
+        valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=True)
 
     
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
@@ -121,17 +128,20 @@ def train_and_validate(data_x, data_y, valid_x, valid_y, epochs, output, image=F
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda epoch: lrr ** epoch)
     criterion = nn.CrossEntropyLoss()
     best_valid_loss = (0, np.inf)
-    for epoch in range(1, epochs+1):
+    desc = 'Epoch: 1\tLoss: \tValidation loss: \tAccuracy: '
+    pbar = tqdm(range(1, epochs+1), position=0, leave=True)
+    for epoch in pbar:
+        pbar.set_description(desc)  
         loss = train_epoch(model, train_loader, optimizer, criterion, device)
         valid_loss = validate(model, valid_loader, criterion, device)
         acc = accuracy(model, valid_loader, device)
         scheduler.step()
-        print(f'Epoch: {epoch}\tLoss: {loss:.4f}\tValidation loss: {valid_loss:.4f}\tAccuracy: {acc:.4f}')
-        torch.save(model.state_dict(), output + "Latest.pth")
+        desc = f'Epoch: {epoch}\tLoss: {loss:.4f}\tValidation loss: {valid_loss:.4f}\tAccuracy: {acc:.4f}'
+        torch.save(model.state_dict(), output + "_latest.pth")
         if valid_loss < best_valid_loss[1]:
             best_valid_loss = (epoch, valid_loss)
-            torch.save(model.state_dict(), output + "Best.pth")
-    model.load_state_dict(torch.load(args.output + "Best.pth"))
+            torch.save(model.state_dict(), output + "_best.pth")
+    model.load_state_dict(torch.load(args.output + "_best.pth"))
     print(f'Lowest validation loss {best_valid_loss[1]:.4f} after {best_valid_loss[0]} epochs with a accuracy of {accuracy(model, valid_loader, device):.4f}')
     return model
 
@@ -155,14 +165,18 @@ def demo(model, env, device, episodes=1000):
             
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Imitation Learning')
-    parser.add_argument('experiences', type=str, help='data file')
+    parser.add_argument('experiences', type=str, nargs='+', help='data file')
     parser.add_argument('game', type=str, help='game name')
     parser.add_argument('epochs', type=int, default=10, help='number of epochs')
     parser.add_argument('output', type=str, help='output file')
     parser.add_argument('--image', action='store_true', help='use image as input')
+    parser.add_argument('--imbalancedSampler', action='store_true', help='use imbalanced sampler')
     args = parser.parse_args()
-
-    experiences = pickle.load(open(args.experiences, "rb"))
+    
+    experiences = []
+    for folder in args.experiences:
+        experiences += pickle.load(open(f"{folder}/experiences.pkl", "rb"))
+    print(f"Loaded {len(experiences)} experiences")
     data_x, data_y, valid_x, valid_y = create_validation_split(experiences, 0.8)
     data_x = torch.from_numpy(data_x).type(torch.float)
     data_y = torch.from_numpy(data_y).type(torch.LongTensor)
@@ -189,6 +203,6 @@ if __name__ == "__main__":
     seed = 0
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    model = train_and_validate(data_x, data_y, valid_x, valid_y, epochs=args.epochs, output=args.output, image=args.image)
+    model = train_and_validate(data_x, data_y, valid_x, valid_y, epochs=args.epochs, output=args.output, image=args.image, imbalancedSampler=args.imbalancedSampler)
 
-    demo(model, env, device, episodes=1000)
+    ensamble_run([model], env, 1000, max_t, device, "average")

@@ -12,6 +12,7 @@ from torch import optim
 
 from model import QNetwork, QnetworkImage
 from replay_buffer import PriorityReplayBuffer
+from ensamble import ensamble
 
 
 BUFFER_SIZE = int(1e5)      # replay buffer size
@@ -31,7 +32,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 class Agent():
     """Interacts with and learns from the environment."""
 
-    def __init__(self, state_size, action_size, seed, buffer_size = BUFFER_SIZE, compute_weights = False, img=False):
+    def __init__(self, state_size, action_size, seed, buffer_size = BUFFER_SIZE, compute_weights = False, img=False, finetune=False, ensamble_method = 'average'):
         """Initialize an Agent object.
         
         Params
@@ -45,13 +46,14 @@ class Agent():
         self.compute_weights = compute_weights
         self.buffer_size = buffer_size
         self.img = img
+        self.ensamble_method = ensamble_method
 
         random.seed(seed)
 
         # Q-Network
         if self.img:
-            self.qnetwork_local = QnetworkImage(state_size, action_size, seed).to(device)
-            self.qnetwork_target = QnetworkImage(state_size, action_size, seed).to(device)
+            self.qnetwork_local = QnetworkImage(state_size, action_size, seed, finetune=finetune).to(device)
+            self.qnetwork_target = QnetworkImage(state_size, action_size, seed, finetune=finetune).to(device)
         else:
             self.qnetwork_local = QNetwork(state_size, action_size, seed).to(device)
             self.qnetwork_target = QNetwork(state_size, action_size, seed).to(device)
@@ -101,7 +103,7 @@ class Agent():
         if self.t_step_mem == 0:
             self.memory.update_memory_sampling()
 
-    def act(self, state, eps=0, other_model=None):
+    def act(self, state, psi=0, eps=0, other_models=[]):
         """Returns actions for given state as per current policy.
         
         Params
@@ -115,14 +117,14 @@ class Agent():
             action_values = self.qnetwork_local(state)
         self.qnetwork_local.train()
 
-        # Epsilon-greedy action selection
+        #Probabilistic Policy Reuse with Epsilon-greedy action selection
 
         rnd = random.random()
-        if rnd < eps:
-            if other_model:
-                return np.argmax(other_model(state).cpu().data.numpy())
-            else:
-                return random.choice(np.arange(self.action_size))
+        if other_models and rnd < psi:
+            return ensamble(other_models, state, self.ensamble_method)
+            #return np.argmax(other_model(state).cpu().data.numpy())
+        elif rnd < eps:
+            return random.choice(np.arange(self.action_size))
         else:
             return np.argmax(action_values.cpu().data.numpy())
                 
@@ -133,6 +135,7 @@ class Agent():
         #     elif other_model is not None:
         #         return np.argmax(other_model(state).cpu().data.numpy())
         # return random.choice(np.arange(self.action_size))
+
 
     def learn(self, sampling, gamma, pretrain=False):
         """Update value parameters using given batch of experience tuples.

@@ -21,9 +21,8 @@ class QNetwork(nn.Module):
         self.seed = torch.manual_seed(seed)
         self.fc1 = nn.Linear(state_size, 256)
         self.fc2 = nn.Linear(256, 128)
-        self.fc3 = nn.Linear(128, action_size)
+        self.fc3 = nn.Linear(128, action_size)        
 
-        
 
     def forward(self, state):
         x = F.relu(self.fc1(state))
@@ -102,16 +101,24 @@ class ImitationNetwork(nn.Module):
         """
         super(ImitationNetwork, self).__init__()
         self.seed = torch.manual_seed(seed)
-        self.fc1 = nn.Linear(state_size, 256)
-        self.fc2 = nn.Linear(256, 128)
+
+        self.fc1 = nn.Sequential(
+            nn.Linear(state_size, 256),
+            nn.ReLU(),
+        )
+
+        self.fc2 = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(),
+        )
+        
         self.fc3 = nn.Linear(128, action_size)
 
-        
-
     def forward(self, state):
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
-        return F.softmax(self.fc3(x), dim=-1)
+        x = self.fc1(state)
+        x = self.fc2(x)
+        #return F.softmax(self.fc3(x), dim=-1)
+        return self.fc3(x)
 
 class ImitationNetworkImage(nn.Module):
     def __init__(self, state_size, action_size, seed):
